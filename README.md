@@ -57,13 +57,10 @@ Example with explicit settings:
 | `-port` | `4532` | rigctld-compatible server TCP port |
 | `-rx-frequency` | `437800000` | Initial RX frequency in Hz |
 | `-tx-frequency` | `145990000` | Initial TX frequency in Hz |
-| `-transport` | `classic-raw` | Radio transport; `classic-raw` and `classic`
-use SPP/RFCOMM. BLE is unsupported. |
-| `-rfcomm-channel` | `0` | Explicit SPP RFCOMM channel (1–30); `0` attempts
-SDP discovery |
+| `-transport` | `classic-raw` | Radio transport; `classic-raw` and `classic` use SPP/RFCOMM. BLE is unsupported. |
+| `-rfcomm-channel` | `0` | Explicit SPP RFCOMM channel (1–30); `0` attempts SDP discovery |
 | `-verbose` | `false` | Enable debug logging |
-| `-headless` | `false` | Run without the Qt window and immediately attempt to
-connect to the radio |
+| `-headless` | `false` | Run without the Qt window and immediately attempt to connect to the radio |
 
 For the complete options list, run `./gpredict-vrn76-bridge --help`.
 
