@@ -42,36 +42,53 @@ func TestSatelliteMessageHasOfficial30ByteBody(t *testing.T) {
 	}
 }
 
-func TestStartupSeedDoesNotConsumeTrackingEntryFrames(t *testing.T) {
+func TestFrequencyUpdatesRequire50kHzChangePerVFO(t *testing.T) {
 	radio := &recordingRadio{}
-	control := NewFrequencyControl(radio, 145_800_000, 435_000_000)
+	const rxBase, txBase = uint32(145_800_000), uint32(435_000_000)
+	control := NewFrequencyControl(radio, rxBase, txBase)
 	if err := control.ApplyCurrentFrequencies(); err != nil {
 		t.Fatal(err)
 	}
-	if err := control.SetRxHz(145_799_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := control.SetTxHz(435_001_000); err != nil {
-		t.Fatal(err)
-	}
-	if err := control.SetRxHz(145_798_000); err != nil {
-		t.Fatal(err)
+	if len(radio.messages) != 2 {
+		t.Fatalf("startup messages = %d, want 2", len(radio.messages))
 	}
 
-	var flags []uint16
-	for i := 1; i < len(radio.messages); i += 2 {
-		message := radio.messages[i]
-		flags = append(flags, binary.BigEndian.Uint16(message[16:18]))
+	if err := control.SetRxHz(rxBase + 25_000); err != nil {
+		t.Fatal(err)
 	}
-	want := []uint16{0x0a03, 0x0a03, 0x0a03, 0x0a00}
-	if len(flags) != len(want) {
-		t.Fatalf("frequency message count = %d, want %d", len(flags), len(want))
+	if err := control.SetTxHz(txBase + 49_999); err != nil {
+		t.Fatal(err)
 	}
-	for i := range want {
-		if flags[i] != want[i] {
-			t.Fatalf("flags[%d] = %#04x, want %#04x", i, flags[i], want[i])
-		}
+	if len(radio.messages) != 2 {
+		t.Fatalf("messages below threshold = %d, want startup pair only", len(radio.messages))
 	}
+	if control.RXHz() != rxBase+25_000 || control.TXHz() != txBase+49_999 {
+		t.Fatalf("cached frequencies = %d/%d; small changes should still be cached", control.RXHz(), control.TXHz())
+	}
+
+	// The RX movement accumulated to exactly 50 kHz from the last sent value.
+	if err := control.SetRxHz(rxBase + 50_000); err != nil {
+		t.Fatal(err)
+	}
+	if len(radio.messages) != 4 {
+		t.Fatalf("messages after exact RX threshold = %d, want 4", len(radio.messages))
+	}
+	if got := binary.BigEndian.Uint32(radio.messages[3][4:8]); got != rxBase+50_000 {
+		t.Fatalf("sent RX = %d, want %d", got, rxBase+50_000)
+	}
+	if got := binary.BigEndian.Uint32(radio.messages[3][8:12]); got != txBase+49_999 {
+		t.Fatalf("sent TX = %d, want latest cached %d", got, txBase+49_999)
+	}
+
+	// The RX update also sent the latest cached TX value. TX crosses its own
+	// threshold only after moving 50 kHz from that transmitted value.
+	if err := control.SetTxHz(txBase + 99_999); err != nil {
+		t.Fatal(err)
+	}
+	if len(radio.messages) != 6 {
+		t.Fatalf("messages after exact TX threshold = %d, want 6", len(radio.messages))
+	}
+
 }
 
 func TestSPPChannelParser(t *testing.T) {
@@ -197,6 +214,29 @@ func TestRFCOMMConnReadWrite(t *testing.T) {
 	}
 	if string(buf) != "reply" {
 		t.Fatalf("connection read %q, want reply", buf)
+	}
+}
+
+func TestRadioCloseUnblocksRFCOMMReadLoop(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &rfcommConn{fd: fds[0]}
+	defer conn.Close()
+	defer syscall.Close(fds[1])
+
+	radio := NewRadio(conn, false)
+	// The peer sends nothing, so readLoop blocks waiting for the first frame byte.
+	time.Sleep(20 * time.Millisecond)
+	if err := radio.Close(); err != nil {
+		t.Fatalf("radio.Close() failed: %v", err)
+	}
+
+	select {
+	case <-radio.done:
+	case <-time.After(time.Second):
+		t.Fatal("radio readLoop remained blocked after disconnect")
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 )
 
 const (
+	frequencyUpdateThresholdHz  uint32 = 50
 	defaultAddress                     = "38:D2:00:01:2F:3A"
 	defaultRFCOMMChannel               = 1
 	defaultHost                        = "127.0.0.1"
@@ -309,6 +310,9 @@ func (c *rfcommConn) Read(p []byte) (int, error) {
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
+		if err != nil {
+			return 0, err
+		}
 		return n, err
 	}
 }
@@ -333,13 +337,20 @@ func (c *rfcommConn) Write(p []byte) (int, error) {
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
+		if err != nil {
+			return 0, err
+		}
 		return n, err
 	}
 }
 
 func (c *rfcommConn) Close() error {
 	var err error
-	c.closeOnce.Do(func() { err = syscall.Close(c.fd) })
+	c.closeOnce.Do(func() {
+		// Shutdown the socket with SHUT_RDWR to wake up any blocking reads before closing
+		syscall.Shutdown(c.fd, syscall.SHUT_RDWR)
+		err = syscall.Close(c.fd)
+	})
 	return err
 }
 
@@ -355,11 +366,14 @@ type MessageSender interface {
 }
 
 type FrequencyControl struct {
-	mu      sync.Mutex
-	radio   MessageSender
-	rxHz    uint32
-	txHz    uint32
-	updates int
+	mu          sync.Mutex
+	radio       MessageSender
+	rxHz        uint32
+	txHz        uint32
+	updates     int
+	lastRxHz    uint32
+	lastTxHz    uint32
+	hasSentPair bool
 }
 
 func NewFrequencyControl(radio MessageSender, rxHz, txHz uint32) *FrequencyControl {
@@ -411,6 +425,15 @@ func (c *FrequencyControl) SetTxHz(frequency uint32) error {
 }
 
 func (c *FrequencyControl) sendSatellitePair(rxHz, txHz uint32, countUpdate bool) error {
+	// ApplyCurrentFrequencies seeds the radio on connect; subsequent rigctl
+	// updates are sent only when either VFO moves at least 50 kHz from the
+	// last pair actually sent. Small changes accumulate in rxHz/txHz.
+	if countUpdate && c.hasSentPair &&
+		frequencyDelta(c.lastRxHz, rxHz) < frequencyUpdateThresholdHz &&
+		frequencyDelta(c.lastTxHz, txHz) < frequencyUpdateThresholdHz {
+		return nil
+	}
+
 	flags := flagsSteady
 	if c.updates < 2 {
 		flags = flagsInitial
@@ -428,7 +451,20 @@ func (c *FrequencyControl) sendSatellitePair(rxHz, txHz uint32, countUpdate bool
 	if countUpdate {
 		c.updates++
 	}
+
+	// Update the cached last sent frequencies
+	c.lastRxHz = rxHz
+	c.lastTxHz = txHz
+	c.hasSentPair = true
+
 	return nil
+}
+
+func frequencyDelta(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 type RigctlProtocol struct {
