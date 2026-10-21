@@ -77,3 +77,5 @@ secure access to the TCP port.
 channel 1. You can set a channel explicitly with `--rfcomm-channel`.
 - RX and TX frequencies are specified in hertz.
 
+
+![clipboard_20261021223151.bmp](vx_images/clipboard_20261021223151.bmp)
